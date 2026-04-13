@@ -925,6 +925,7 @@ async function expandAllFoldersInCurrentTree(page) {
   }
 
   log('INFO', `Expanded ${expandedCount} folders in the right pane.`);
+  return expandedCount;
 }
 
 async function markDocumentTargetInBrowsePage(page, doc) {
@@ -1093,7 +1094,7 @@ async function crawlWorkspaceDocuments(page) {
     `Using browse pane at x=${rootInfo.left}, y=${rootInfo.top}, w=${rootInfo.width}, h=${rootInfo.height}`
   );
 
-  await expandAllFoldersInCurrentTree(page);
+  const expandedCount = await expandAllFoldersInCurrentTree(page);
 
   const entries = await collectFolderPageEntries(page);
   const discoveredDocuments = new Map();
@@ -1115,10 +1116,15 @@ async function crawlWorkspaceDocuments(page) {
 
   log(
     'INFO',
-    `Folder crawl progress: ${entries.folders.length} folders expanded/discovered, ${discoveredDocuments.size} unique documents discovered.`
+    `Folder crawl progress: ${expandedCount} folders expanded this run, ${entries.folders.length} folders discovered, ${discoveredDocuments.size} unique documents discovered.`
   );
 
-  return Array.from(discoveredDocuments.values());
+  return {
+    documents: Array.from(discoveredDocuments.values()),
+    expandedFolderCount: expandedCount,
+    discoveredFolderCount: entries.folders.length,
+    discoveredDocumentCount: discoveredDocuments.size
+  };
 }
 
 async function getDocumentTitle(page, fallbackTitle, docUrl) {
@@ -1405,12 +1411,15 @@ async function downloadExportFromBrowsePage(page, doc) {
   };
 }
 
-async function exportDocumentWithRetries(page, doc, state) {
+async function exportDocumentWithRetries(page, doc, state, progress) {
   const normalizedUrl = normalizeDocUrl(doc.url);
+  const progressPrefix = progress
+    ? `[${progress.current}/${progress.total}] `
+    : '';
 
   if (isExportedAndPresent(state, normalizedUrl)) {
     const existing = state.exported[normalizedUrl];
-    log('INFO', `Skip already exported: ${existing.title || doc.title || normalizedUrl}`);
+    log('INFO', `${progressPrefix}Skip already exported: ${existing.title || doc.title || normalizedUrl}`);
     return { skipped: true, relativePath: existing.relativePath || existing.filename };
   }
 
@@ -1418,7 +1427,7 @@ async function exportDocumentWithRetries(page, doc, state) {
     try {
       log(
         'INFO',
-        `Exporting (${attempt}/${MAX_RETRIES}): ${doc.title || normalizedUrl}`
+        `${progressPrefix}Exporting (${attempt}/${MAX_RETRIES}): ${doc.title || normalizedUrl}`
       );
 
       const result = await downloadExportFromBrowsePage(page, doc);
@@ -1437,7 +1446,7 @@ async function exportDocumentWithRetries(page, doc, state) {
     } catch (error) {
       log(
         'WARN',
-        `Attempt ${attempt} failed for ${doc.title || normalizedUrl}: ${error.message}`
+        `${progressPrefix}Attempt ${attempt} failed for ${doc.title || normalizedUrl}: ${error.message}`
       );
 
       if (attempt === MAX_RETRIES) {
@@ -1500,7 +1509,8 @@ async function main() {
     await ensureLoggedIn(page);
 
     log('INFO', `Starting Quip folder crawl from ${BROWSE_URL}`);
-    const documents = await crawlWorkspaceDocuments(page);
+    const crawlResult = await crawlWorkspaceDocuments(page);
+    const documents = crawlResult.documents;
 
     if (!documents.length) {
       log(
@@ -1528,15 +1538,22 @@ async function main() {
       });
     }
 
-    log('INFO', `Collected ${uniqueDocs.length} unique documents to process.`);
+    log(
+      'INFO',
+      `Collected ${uniqueDocs.length} unique documents to process after discovering ${crawlResult.discoveredFolderCount} folders.`
+    );
 
     let successCount = 0;
     let skippedCount = 0;
     let failureCount = 0;
+    const totalDocs = uniqueDocs.length;
 
-    for (const doc of uniqueDocs) {
+    for (const [index, doc] of uniqueDocs.entries()) {
       try {
-        const result = await exportDocumentWithRetries(page, doc, state);
+        const result = await exportDocumentWithRetries(page, doc, state, {
+          current: index + 1,
+          total: totalDocs
+        });
         if (result.skipped) {
           skippedCount += 1;
         } else {
@@ -1544,8 +1561,13 @@ async function main() {
         }
       } catch (error) {
         failureCount += 1;
-        log('ERROR', `Failed to export ${doc.title || doc.url}: ${error.message}`);
+        log('ERROR', `[${index + 1}/${totalDocs}] Failed to export ${doc.title || doc.url}: ${error.message}`);
       }
+
+      log(
+        'INFO',
+        `Progress: ${index + 1}/${totalDocs} processed. Success: ${successCount}, skipped: ${skippedCount}, failed: ${failureCount}.`
+      );
     }
 
     log(

@@ -2,12 +2,13 @@
 
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Playwright](https://img.shields.io/badge/Playwright-Automation-2EAD33?logo=playwright&logoColor=white)](https://playwright.dev/)
-[![Windows Tested](https://img.shields.io/badge/Tested-Windows-0078D4?logo=windows&logoColor=white)](https://www.microsoft.com/windows)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-555555)](#getting-started)
 
-This project uses Playwright and Node.js to export Quip files to HTML while preserving the folder hierarchy locally. It is designed to be robust and typically runs at roughly one file every 2-4 seconds, depending on Quip responsiveness and document size. In one tested run, it exported about 500 files in roughly 20 minutes.
+This project uses Playwright and Node.js to export all Quip files to HTML (and, optionally, to Markdown).
 
 - ⚡ Export about 500 files in roughly 20 minutes
 - 📁 Preserve the Quip folder hierarchy locally
+- 🖼️ Keep images, links, and tables intact in the exported HTML
 - 🔁 Resume safely and skip already-exported files on reruns
 
 ## Getting Started
