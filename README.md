@@ -1,6 +1,6 @@
 # Quip HTML Exporter
 
-This project uses Playwright and Node.js to crawl the Quip browse UI, expand the visible folder tree, gather accessible document rows, and export each document to HTML while preserving the folder hierarchy locally.
+This project uses Playwright and Node.js to crawl the Quip browse UI, expand the visible folder tree, gather accessible document rows, and export files to HTML while preserving the folder hierarchy locally. In practice, it is robust and runs at roughly one file every 2-4 seconds, depending on Quip responsiveness and document size.
 
 The script is designed to be conservative and rerunnable:
 
@@ -31,13 +31,27 @@ npm install
 npx playwright install chromium
 ```
 
-## Run
+## Getting Started
+
+1. Download or clone this repository.
+2. Install dependencies:
+
+```bash
+npm install
+npx playwright install chromium
+```
+
+3. Start the exporter:
 
 ```bash
 npm start
 ```
 
-The browser opens in headed mode by default. If Quip is not already authenticated in the persistent profile, log in manually in the opened browser window and then continue when prompted in the terminal.
+4. On the very first run, Playwright opens Chromium in headed mode. Log in to Quip in that browser window.
+5. Once Quip is fully loaded, the script continues and starts exporting automatically.
+6. After the export has started, you can leave the window open, move it to the background, or minimize it and let the script continue.
+
+The browser profile is persisted in `.playwright-profile/`, so later runs should usually reuse the same Quip login session.
 
 ## Output
 
@@ -56,6 +70,11 @@ exports/
 ```
 
 The state file records successful exports so reruns skip files that were already downloaded.
+
+## Platform Notes
+
+- This workflow was tested on Windows.
+- It should also work on macOS and Linux because it uses Node.js and Playwright, but only the Windows flow has been validated so far.
 
 ## Optional Environment Variables
 
@@ -87,6 +106,20 @@ MAX_RETRIES=5 npm start
 9. Saves the download into `exports/<folder path>/` using a sanitized filename.
 10. Records successful exports in `exports/.quip-export-state.json`.
 
+## Optional: Convert HTML Exports To Markdown
+
+If you have [Pandoc](https://pandoc.org/) installed, you can optionally convert the exported HTML files into a mirrored `exports_md/` directory.
+
+Pandoc is a separate tool and is not installed by `npm install` in this repository. On Windows, the simplest options are the official installer or a package manager such as `winget` or `choco`.
+
+From the repository root in PowerShell:
+
+```powershell
+Get-ChildItem .\exports -Recurse -File -Filter *.html | ForEach-Object { $relative = $_.FullName.Substring((Resolve-Path .\exports).Path.Length + 1); $target = Join-Path .\exports_md ($relative -replace '\.html$', '.md'); New-Item -ItemType Directory -Force -Path (Split-Path $target) | Out-Null; pandoc $_.FullName -f html -t gfm -o $target }
+```
+
+This is optional and intentionally kept outside the main exporter so the repository stays focused on `Quip -> HTML`.
+
 ## Notes
 
 - The script favors robustness over elegance and contains several selector fallbacks near the top of `export-quip-html.js`.
@@ -95,6 +128,7 @@ MAX_RETRIES=5 npm start
 - The script preserves folder structure based on the expanded Quip tree it can see in the right pane.
 - The first file export may require the browse pane to receive focus. The script now does an initial left click automatically before the first right click.
 - The script only exports documents it can discover from the expanded Quip tree. If Quip changes its virtualized tree structure, you may need to adjust the selectors.
+- The exporter is designed around HTML export only. Markdown conversion is best treated as an optional post-processing step.
 
 ## Known limitations / selectors to verify
 
