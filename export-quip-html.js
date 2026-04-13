@@ -17,6 +17,8 @@ const MAX_RETRIES = Number(process.env.MAX_RETRIES || 3);
 // easy to adjust without digging through the rest of the script.
 const SELECTORS = {
   workspaceReadyIndicators: [
+    '.navigation-controller-main.has-sidebar',
+    '.navigation-controller-main.has-sidebar .folder-list-body',
     '[role="tree"]',
     '[role="navigation"]',
     '[role="main"]',
@@ -30,6 +32,9 @@ const SELECTORS = {
   // Best-effort selectors for the main browse/content pane that lists the
   // current folder's children. These are likely to need manual tuning for Quip.
   browseMainContainers: [
+    '.navigation-controller-main.has-sidebar .folder-list-body',
+    '.navigation-controller-main.has-sidebar .navigation-controller-body.scrollable',
+    '.navigation-controller-main.has-sidebar',
     '[role="main"]',
     'main',
     '[data-testid*="browse"]',
@@ -40,8 +45,22 @@ const SELECTORS = {
     '[class*="list"]'
   ],
 
+  // Containers that are likely part of the left navigation and should not be
+  // treated as the exportable file list.
+  browseSidebarContainers: [
+    '.drawer-body.scrollable.scrollable-composited',
+    '[role="navigation"]',
+    '[role="tree"]',
+    'nav',
+    'aside',
+    '[class*="sidebar"]',
+    '[class*="left"]'
+  ],
+
   // Folder links are assumed to navigate within Quip's browse UI.
   folderLinks: [
+    '.navigation-controller-main.has-sidebar .folder-list-row a[href*="/browse"]',
+    '.navigation-controller-main.has-sidebar .folder-list-row a[href^="/browse"]',
     'a[href*="/browse"]',
     'a[href^="/browse"]'
   ],
@@ -49,8 +68,19 @@ const SELECTORS = {
   // Document links are assumed to open real Quip documents rather than browse
   // containers. If Quip renders documents without anchors, adjust this area.
   documentLinks: [
+    '.navigation-controller-main.has-sidebar .folder-list-row a[href*="://quip.com/"]:not([href*="/browse"])',
+    '.navigation-controller-main.has-sidebar .folder-list-row a[href^="/"]:not([href^="/browse"])',
     'a[href*="://quip.com/"]:not([href*="/browse"])',
     'a[href^="/"]:not([href^="/browse"])'
+  ],
+
+  browseRows: [
+    '.navigation-controller-main.has-sidebar .folder-list-body .folder-list-row',
+    '.navigation-controller-main.has-sidebar .folder-list-row'
+  ],
+
+  nestedFolderContainers: [
+    '.folder-list-rows'
   ],
 
   // Best-effort document title selectors once a document is open.
@@ -75,6 +105,19 @@ const SELECTORS = {
     '[data-testid*="more"] button',
     '[class*="menu"] button',
     '[class*="more"] button'
+  ],
+
+  contextMenuPopovers: [
+    '.popover.spaceship-popover.visible .parts-menu.scrollable',
+    '.popover.spaceship-popover.visible .parts-menu'
+  ],
+
+  contextMenuRows: [
+    '.popover.spaceship-popover.visible .menu-row'
+  ],
+
+  contextMenuLabels: [
+    '.parts-menu-label'
   ]
 };
 
@@ -91,6 +134,8 @@ const TIMINGS = {
   downloadTimeoutMs: 60000,
   postClickPauseMs: 700,
   postNavigationPauseMs: 1000,
+  folderContentsLoadMs: 6000,
+  postContextMenuPauseMs: 800,
   betweenRetriesMs: 2500,
   workspaceReadyPollMs: 1000,
   maxWorkspaceWaitMs: 120000,
@@ -402,7 +447,7 @@ function formatFolderPath(pathParts) {
 }
 
 async function collectFolderPageEntries(page) {
-  return page.evaluate((selectors, startUrl) => {
+  return page.evaluate(({ selectors, startUrl }) => {
     function isVisible(element) {
       if (!element) {
         return false;
@@ -419,6 +464,27 @@ async function collectFolderPageEntries(page) {
 
     function normalizeWhitespace(text) {
       return String(text || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function getRowTitle(row) {
+      const anchor = row.querySelector('a[href], a[aria-label]');
+      if (anchor) {
+        const title =
+          normalizeWhitespace(anchor.getAttribute('aria-label')) ||
+          normalizeWhitespace(anchor.getAttribute('title')) ||
+          normalizeWhitespace(anchor.textContent) ||
+          normalizeWhitespace(anchor.innerText);
+        if (title) {
+          return title;
+        }
+      }
+
+      const clone = row.cloneNode(true);
+      for (const nested of clone.querySelectorAll('.folder-list-rows')) {
+        nested.remove();
+      }
+
+      return normalizeWhitespace(clone.textContent);
     }
 
     function isLikelyDocumentUrl(rawUrl) {
@@ -472,7 +538,39 @@ async function collectFolderPageEntries(page) {
       }
     }
 
+    function isSidebarLike(node) {
+      if (!node || node === document.body) {
+        return false;
+      }
+
+      if (
+        node.matches &&
+        selectors.browseSidebarContainers.some((selector) => {
+          try {
+            return node.matches(selector);
+          } catch {
+            return false;
+          }
+        })
+      ) {
+        return true;
+      }
+
+      const className = String(node.className || '').toLowerCase();
+      return (
+        className.includes('sidebar') ||
+        className.includes('leftpane') ||
+        className.includes('left-pane') ||
+        className.includes('navigation')
+      );
+    }
+
     function pickRoot() {
+      const exactRoot = document.querySelector('.navigation-controller-main.has-sidebar .folder-list-body');
+      if (exactRoot && isVisible(exactRoot)) {
+        return exactRoot;
+      }
+
       const candidates = [];
 
       for (const selector of selectors.browseMainContainers) {
@@ -481,9 +579,17 @@ async function collectFolderPageEntries(page) {
             continue;
           }
 
+          if (isSidebarLike(node) || node.closest('nav, aside, [role="navigation"], [role="tree"]')) {
+            continue;
+          }
+
           const rect = node.getBoundingClientRect();
           const anchorCount = node.querySelectorAll('a[href]').length;
-          const score = rect.width * rect.height + anchorCount * 1000;
+          const score =
+            rect.width * rect.height +
+            anchorCount * 1000 +
+            rect.left * 5000 +
+            rect.width * 100;
           candidates.push({ node, score });
         }
       }
@@ -492,16 +598,123 @@ async function collectFolderPageEntries(page) {
       return candidates[0] ? candidates[0].node : document.body;
     }
 
-    function extractTitle(anchor) {
-      const row = anchor.closest('[role="row"], [role="treeitem"], li, tr, [class*="row"], [class*="item"]');
-      return (
-        normalizeWhitespace(anchor.getAttribute('aria-label')) ||
-        normalizeWhitespace(anchor.getAttribute('title')) ||
-        normalizeWhitespace(anchor.textContent) ||
-        normalizeWhitespace(anchor.innerText) ||
-        normalizeWhitespace(row && row.textContent) ||
-        'Untitled'
-      );
+    function extractTitleFromRow(row, anchor) {
+      const explicitTitle =
+        normalizeWhitespace(anchor && anchor.getAttribute && anchor.getAttribute('aria-label')) ||
+        normalizeWhitespace(anchor && anchor.getAttribute && anchor.getAttribute('title')) ||
+        normalizeWhitespace(anchor && anchor.textContent) ||
+        normalizeWhitespace(anchor && anchor.innerText);
+
+      if (explicitTitle) {
+        return explicitTitle;
+      }
+
+      const clone = row.cloneNode(true);
+      for (const nested of clone.querySelectorAll('.folder-list-rows')) {
+        nested.remove();
+      }
+
+      return normalizeWhitespace(clone.textContent) || 'Untitled';
+    }
+
+    function getNestedContainer(row) {
+      const descendant = row.querySelector('.folder-list-rows');
+      if (descendant) {
+        return descendant;
+      }
+
+      const sibling = row.nextElementSibling;
+      if (
+        sibling &&
+        sibling.matches &&
+        selectors.nestedFolderContainers.some((selector) => sibling.matches(selector))
+      ) {
+        return sibling;
+      }
+
+      return null;
+    }
+
+    function buildFallbackDocumentKey(pathParts, title) {
+      return `quip-fallback://${pathParts.join('/')}/${title}`;
+    }
+
+    function getRowExpandedState(row) {
+      const expandedNode =
+        row.querySelector('[aria-expanded]') ||
+        row.querySelector('.list-item-row');
+
+      if (!expandedNode) {
+        return null;
+      }
+
+      const value = expandedNode.getAttribute('aria-expanded');
+      return value === 'true' || value === 'false' ? value : null;
+    }
+
+    function visitNode(node, pathParts, folderItems, documentItems, seenFolders, seenDocuments) {
+      if (!node || !isVisible(node)) {
+        return;
+      }
+
+      if (node.matches && node.matches(selectors.rowSelector)) {
+        const anchor = node.querySelector('a[href]');
+        const href = anchor ? (anchor.href || anchor.getAttribute('href') || '') : '';
+        const title = extractTitleFromRow(node, anchor);
+        const normalizedUrl = href ? normalizeUrl(href) : '';
+        const expandedState = getRowExpandedState(node);
+        const nested = getNestedContainer(node);
+        const folderLike = expandedState === 'true' || expandedState === 'false';
+
+        if (folderLike) {
+          const folderKey = `${pathParts.join('/')}/${title}`;
+          if (!seenFolders.has(folderKey)) {
+            seenFolders.add(folderKey);
+            folderItems.push({
+              url: normalizedUrl || `folder:${folderKey}`,
+              title,
+              pathParts: pathParts.slice(),
+              expanded: expandedState === 'true' || Boolean(nested)
+            });
+          }
+
+          if (nested) {
+            visitNode(
+              nested,
+              pathParts.concat([title]),
+              folderItems,
+              documentItems,
+              seenFolders,
+              seenDocuments
+            );
+          }
+
+          return;
+        }
+
+        if (!title) {
+          return;
+        }
+
+        if (href && !isLikelyDocumentUrl(href)) {
+          return;
+        }
+
+        const documentKey = normalizedUrl || buildFallbackDocumentKey(pathParts, title);
+        if (!seenDocuments.has(documentKey)) {
+          seenDocuments.add(documentKey);
+          documentItems.push({
+            url: documentKey,
+            title,
+            folderPathParts: pathParts.slice()
+          });
+        }
+        return;
+      }
+
+      for (const child of Array.from(node.children || [])) {
+        visitNode(child, pathParts, folderItems, documentItems, seenFolders, seenDocuments);
+      }
     }
 
     const root = pickRoot();
@@ -509,51 +722,23 @@ async function collectFolderPageEntries(page) {
     const documentItems = [];
     const seenFolders = new Set();
     const seenDocuments = new Set();
-    const combinedSelectors = Array.from(
-      new Set([].concat(selectors.folderLinks, selectors.documentLinks))
-    );
-    const anchors = Array.from(root.querySelectorAll(combinedSelectors.join(',')));
-
-    for (const anchor of anchors) {
-      if (!isVisible(anchor)) {
-        continue;
-      }
-
-      const href = anchor.href || anchor.getAttribute('href') || '';
-      const title = extractTitle(anchor);
-      const normalizedUrl = normalizeUrl(href);
-
-      if (isLikelyFolderUrl(href)) {
-        if (seenFolders.has(normalizedUrl)) {
-          continue;
-        }
-
-        seenFolders.add(normalizedUrl);
-        folderItems.push({ url: normalizedUrl, title });
-        continue;
-      }
-
-      if (!isLikelyDocumentUrl(href)) {
-        continue;
-      }
-
-      if (seenDocuments.has(normalizedUrl)) {
-        continue;
-      }
-
-      seenDocuments.add(normalizedUrl);
-      documentItems.push({ url: normalizedUrl, title });
-    }
+    visitNode(root, [], folderItems, documentItems, seenFolders, seenDocuments);
 
     return {
       folders: folderItems,
       documents: documentItems
     };
   }, {
-    browseMainContainers: SELECTORS.browseMainContainers,
-    folderLinks: SELECTORS.folderLinks,
-    documentLinks: SELECTORS.documentLinks
-  }, START_URL);
+    selectors: {
+      browseMainContainers: SELECTORS.browseMainContainers,
+      browseSidebarContainers: SELECTORS.browseSidebarContainers,
+      folderLinks: SELECTORS.folderLinks,
+      documentLinks: SELECTORS.documentLinks,
+      rowSelector: SELECTORS.browseRows.join(','),
+      nestedFolderContainers: SELECTORS.nestedFolderContainers
+    },
+    startUrl: START_URL
+  });
 }
 
 async function openBrowseFolder(page, folderUrl) {
@@ -564,84 +749,374 @@ async function openBrowseFolder(page, folderUrl) {
   });
   await page.waitForLoadState('domcontentloaded');
   await page.waitForTimeout(TIMINGS.postNavigationPauseMs);
+  await page.waitForTimeout(TIMINGS.folderContentsLoadMs);
 }
 
-async function crawlWorkspaceDocuments(page) {
-  const discoveredDocuments = new Map();
-  const discoveredFolders = new Set();
-  const queuedFolderUrls = new Set();
-  const queue = [
-    {
-      url: normalizeFolderUrl(BROWSE_URL),
-      pathParts: []
-    }
-  ];
-
-  queuedFolderUrls.add(normalizeFolderUrl(BROWSE_URL));
-
-  let loopCount = 0;
-  while (queue.length) {
-    loopCount += 1;
-    if (loopCount > TIMINGS.crawlLoopLimit) {
-      throw new Error('Folder crawl exceeded the safety loop limit.');
-    }
-
-    const currentFolder = queue.shift();
-    const normalizedFolderUrl = normalizeFolderUrl(currentFolder.url);
-
-    if (discoveredFolders.has(normalizedFolderUrl)) {
-      continue;
-    }
-
-    log('INFO', `Opening folder: ${formatFolderPath(currentFolder.pathParts)} -> ${normalizedFolderUrl}`);
-    await openBrowseFolder(page, normalizedFolderUrl);
-    discoveredFolders.add(normalizedFolderUrl);
-
-    const entries = await collectFolderPageEntries(page);
-
-    for (const documentItem of entries.documents) {
-      const normalizedDocUrl = normalizeDocUrl(documentItem.url);
-      if (!isLikelyDocumentUrl(normalizedDocUrl)) {
-        continue;
+async function markBrowseContentRoot(page) {
+  return page.evaluate(() => {
+    function isVisible(element) {
+      if (!element) {
+        return false;
       }
 
-      if (!discoveredDocuments.has(normalizedDocUrl)) {
-        discoveredDocuments.set(normalizedDocUrl, {
-          url: normalizedDocUrl,
-          title: documentItem.title || extractDocId(normalizedDocUrl),
-          folderPathParts: currentFolder.pathParts.slice()
-        });
+      const style = window.getComputedStyle(element);
+      if (!style || style.visibility === 'hidden' || style.display === 'none') {
+        return false;
       }
+
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
     }
 
-    for (const folderItem of entries.folders) {
-      const normalizedChildFolderUrl = normalizeFolderUrl(folderItem.url);
-      if (!isLikelyFolderUrl(normalizedChildFolderUrl)) {
-        continue;
+    for (const oldNode of document.querySelectorAll('[data-quip-export-root="true"]')) {
+      oldNode.removeAttribute('data-quip-export-root');
+    }
+
+    const winner =
+      document.querySelector('.navigation-controller-main.has-sidebar .folder-list-body') ||
+      document.querySelector('.navigation-controller-main.has-sidebar .navigation-controller-body.scrollable') ||
+      document.querySelector('.navigation-controller-main.has-sidebar') ||
+      document.body;
+
+    if (!isVisible(winner)) {
+      return {
+        tagName: winner.tagName,
+        left: 0,
+        top: 0,
+        width: 0,
+        height: 0
+      };
+    }
+
+    winner.setAttribute('data-quip-export-root', 'true');
+
+    const rect = winner.getBoundingClientRect();
+    return {
+      tagName: winner.tagName,
+      left: Math.round(rect.left),
+      top: Math.round(rect.top),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height)
+    };
+  });
+}
+
+async function markNextCollapsedFolderToggle(page) {
+  return page.evaluate(() => {
+    function isVisible(element) {
+      if (!element) {
+        return false;
       }
 
+      const style = window.getComputedStyle(element);
+      if (!style || style.visibility === 'hidden' || style.display === 'none') {
+        return false;
+      }
+
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    }
+
+    function normalizeWhitespace(text) {
+      return String(text || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function getRowTitle(row) {
+      const anchor = row.querySelector('a[href], a[aria-label]');
+      if (anchor) {
+        const title =
+          normalizeWhitespace(anchor.getAttribute('aria-label')) ||
+          normalizeWhitespace(anchor.getAttribute('title')) ||
+          normalizeWhitespace(anchor.textContent) ||
+          normalizeWhitespace(anchor.innerText);
+        if (title) {
+          return title;
+        }
+      }
+
+      const clone = row.cloneNode(true);
+      for (const nested of clone.querySelectorAll('.folder-list-rows')) {
+        nested.remove();
+      }
+
+      return normalizeWhitespace(clone.textContent) || 'Untitled Folder';
+    }
+
+    function getNestedContainer(row) {
+      const descendant = row.querySelector('.folder-list-rows');
+      if (descendant && isVisible(descendant)) {
+        return descendant;
+      }
+
+      const sibling = row.nextElementSibling;
       if (
-        normalizedChildFolderUrl === normalizedFolderUrl ||
-        discoveredFolders.has(normalizedChildFolderUrl) ||
-        queuedFolderUrls.has(normalizedChildFolderUrl)
+        sibling &&
+        sibling.matches &&
+        sibling.matches('.folder-list-rows') &&
+        isVisible(sibling)
+      ) {
+        return sibling;
+      }
+
+      return null;
+    }
+
+    for (const oldNode of document.querySelectorAll('[data-quip-expand-target="true"]')) {
+      oldNode.removeAttribute('data-quip-expand-target');
+    }
+
+    const root =
+      document.querySelector('.navigation-controller-main.has-sidebar .folder-list-body') ||
+      document.body;
+
+    const rows = Array.from(root.querySelectorAll('.folder-list-row')).filter((row) => isVisible(row));
+
+    for (const row of rows) {
+      const expandedState =
+        (row.querySelector('[aria-expanded]') || row.querySelector('.list-item-row'))
+          ?.getAttribute('aria-expanded') || null;
+      if (expandedState !== 'false') {
+        continue;
+      }
+
+      const toggle = row.querySelector('.column-handle');
+      if (!toggle || !isVisible(toggle)) {
+        continue;
+      }
+
+      const isExpanded = Boolean(getNestedContainer(row));
+
+      if (isExpanded) {
+        continue;
+      }
+
+      toggle.setAttribute('data-quip-expand-target', 'true');
+      return {
+        found: true,
+        title: getRowTitle(row)
+      };
+    }
+
+    return { found: false, title: null };
+  });
+}
+
+async function expandAllFoldersInCurrentTree(page) {
+  let expandedCount = 0;
+  let attempts = 0;
+
+  while (true) {
+    attempts += 1;
+    if (attempts > TIMINGS.crawlLoopLimit) {
+      throw new Error('Folder expansion exceeded the safety loop limit.');
+    }
+
+    const candidate = await markNextCollapsedFolderToggle(page);
+    if (!candidate.found) {
+      break;
+    }
+
+    log('INFO', `Expanding folder: ${candidate.title}`);
+    await page.locator('[data-quip-expand-target="true"]').first().click({
+      timeout: TIMINGS.menuWaitMs
+    });
+    expandedCount += 1;
+    await page.waitForTimeout(TIMINGS.folderContentsLoadMs);
+  }
+
+  log('INFO', `Expanded ${expandedCount} folders in the right pane.`);
+}
+
+async function markDocumentTargetInBrowsePage(page, doc) {
+  return page.evaluate(({ startUrl, docUrl, docTitle, folderPathParts }) => {
+    function isVisible(element) {
+      if (!element) {
+        return false;
+      }
+
+      const style = window.getComputedStyle(element);
+      if (!style || style.visibility === 'hidden' || style.display === 'none') {
+        return false;
+      }
+
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    }
+
+    function normalizeWhitespace(text) {
+      return String(text || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function getRowTitle(row) {
+      const anchor = row.querySelector('a[href], a[aria-label]');
+      if (anchor) {
+        const title =
+          normalizeWhitespace(anchor.getAttribute('aria-label')) ||
+          normalizeWhitespace(anchor.getAttribute('title')) ||
+          normalizeWhitespace(anchor.textContent) ||
+          normalizeWhitespace(anchor.innerText);
+        if (title) {
+          return title;
+        }
+      }
+
+      const clone = row.cloneNode(true);
+      for (const nested of clone.querySelectorAll('.folder-list-rows')) {
+        nested.remove();
+      }
+
+      return normalizeWhitespace(clone.textContent);
+    }
+
+    function normalizeUrl(rawUrl) {
+      try {
+        const url = new URL(rawUrl, startUrl);
+        url.hash = '';
+        url.search = '';
+        return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+      } catch {
+        return String(rawUrl || '').trim();
+      }
+    }
+
+    for (const oldNode of document.querySelectorAll('[data-quip-export-target="true"]')) {
+      oldNode.removeAttribute('data-quip-export-target');
+    }
+
+    const root =
+      document.querySelector('.navigation-controller-main.has-sidebar .folder-list-body') ||
+      document.querySelector('[data-quip-export-root="true"]') ||
+      document.body;
+
+    function getNestedContainer(row) {
+      const descendant = row.querySelector('.folder-list-rows');
+      if (descendant && isVisible(descendant)) {
+        return descendant;
+      }
+
+      const sibling = row.nextElementSibling;
+      if (sibling && sibling.matches && sibling.matches('.folder-list-rows') && isVisible(sibling)) {
+        return sibling;
+      }
+
+      return null;
+    }
+
+    function visit(node, remainingPath) {
+      if (!node || !isVisible(node)) {
+        return null;
+      }
+
+      if (node.matches && node.matches('.folder-list-row')) {
+        const rowTitle = getRowTitle(node);
+        const expandedState =
+          (node.querySelector('[aria-expanded]') || node.querySelector('.list-item-row'))
+            ?.getAttribute('aria-expanded') || null;
+        const nested = getNestedContainer(node);
+
+        if (expandedState === 'true' || expandedState === 'false') {
+          if (remainingPath.length && rowTitle.includes(remainingPath[0]) && nested) {
+            const found = visit(nested, remainingPath.slice(1));
+            if (found) {
+              return found;
+            }
+          }
+          return null;
+        }
+
+        if (!remainingPath.length) {
+          const anchor = node.querySelector('a[href]');
+          const href = anchor ? (anchor.href || anchor.getAttribute('href') || '') : '';
+
+          if (href && normalizeUrl(href) === docUrl) {
+            node.setAttribute('data-quip-export-target', 'true');
+            return { found: true, strategy: 'path+url' };
+          }
+
+          if (rowTitle.toLowerCase().includes(normalizeWhitespace(docTitle).toLowerCase())) {
+            node.setAttribute('data-quip-export-target', 'true');
+            return { found: true, strategy: 'path+title' };
+          }
+        }
+
+        return null;
+      }
+
+      for (const child of Array.from(node.children || [])) {
+        const found = visit(child, remainingPath);
+        if (found) {
+          return found;
+        }
+      }
+
+      return null;
+    }
+
+    const foundByPath = visit(root, Array.isArray(folderPathParts) ? folderPathParts : []);
+    if (foundByPath) {
+      return foundByPath;
+    }
+
+    const rows = Array.from(root.querySelectorAll('.folder-list-row')).filter((row) => isVisible(row));
+    const wantedTitle = normalizeWhitespace(docTitle).toLowerCase();
+    for (const row of rows) {
+      if (
+        (row.querySelector('[aria-expanded]') || row.querySelector('.list-item-row'))
+          ?.hasAttribute('aria-expanded')
       ) {
         continue;
       }
 
-      queue.push({
-        url: normalizedChildFolderUrl,
-        pathParts: currentFolder.pathParts.concat([
-          folderItem.title || 'Untitled Folder'
-        ])
-      });
-      queuedFolderUrls.add(normalizedChildFolderUrl);
+      const text = getRowTitle(row).toLowerCase();
+      if (text && text.includes(wantedTitle)) {
+        row.setAttribute('data-quip-export-target', 'true');
+        return { found: true, strategy: 'title-fallback' };
+      }
     }
 
-    log(
-      'INFO',
-      `Folder crawl progress: ${discoveredFolders.size} folders visited, ${discoveredDocuments.size} unique documents discovered.`
-    );
+    return { found: false, strategy: 'none' };
+  }, {
+    startUrl: START_URL,
+    docUrl: String(doc.url || '').startsWith('quip-fallback://')
+      ? ''
+      : normalizeDocUrl(doc.url),
+    docTitle: doc.title || '',
+    folderPathParts: doc.folderPathParts || []
+  });
+}
+
+async function crawlWorkspaceDocuments(page) {
+  await openBrowseFolder(page, BROWSE_URL);
+  const rootInfo = await markBrowseContentRoot(page);
+  log(
+    'INFO',
+    `Using browse pane at x=${rootInfo.left}, y=${rootInfo.top}, w=${rootInfo.width}, h=${rootInfo.height}`
+  );
+
+  await expandAllFoldersInCurrentTree(page);
+
+  const entries = await collectFolderPageEntries(page);
+  const discoveredDocuments = new Map();
+
+  for (const documentItem of entries.documents) {
+    const normalizedDocUrl = String(documentItem.url || '').startsWith('quip-fallback://')
+      ? documentItem.url
+      : normalizeDocUrl(documentItem.url);
+
+    if (!discoveredDocuments.has(normalizedDocUrl)) {
+      discoveredDocuments.set(normalizedDocUrl, {
+        url: normalizedDocUrl,
+        title: documentItem.title || extractDocId(normalizedDocUrl),
+        folderPathParts: documentItem.folderPathParts || [],
+        folderUrl: normalizeFolderUrl(BROWSE_URL)
+      });
+    }
   }
+
+  log(
+    'INFO',
+    `Folder crawl progress: ${entries.folders.length} folders expanded/discovered, ${discoveredDocuments.size} unique documents discovered.`
+  );
 
   return Array.from(discoveredDocuments.values());
 }
@@ -723,21 +1198,79 @@ async function findMenuItem(page, labelPattern) {
   return null;
 }
 
+async function findVisibleContextMenuRow(page, labelPattern) {
+  const rows = page.locator(SELECTORS.contextMenuRows.join(','));
+  const count = await rows.count().catch(() => 0);
+
+  for (let index = 0; index < count; index += 1) {
+    const row = rows.nth(index);
+    if (!(await safeIsVisible(row))) {
+      continue;
+    }
+
+    const text = await row.textContent().catch(() => '');
+    if (labelPattern.test(String(text || '').trim())) {
+      return row;
+    }
+  }
+
+  return null;
+}
+
+async function waitForContextMenu(page) {
+  await page.waitForSelector(
+    '.popover.spaceship-popover.visible .menu-row[data-item-id="export"], .popover.spaceship-popover.visible .parts-menu',
+    {
+      state: 'visible',
+      timeout: TIMINGS.menuWaitMs
+    }
+  );
+}
+
 async function triggerHtmlExport(page) {
-  const exportItem = await findMenuItem(page, MENU_LABELS.export);
-  if (!exportItem) {
+  let exportItem = page
+    .locator('.popover.spaceship-popover.visible .menu-row[data-item-id="export"]')
+    .first();
+
+  if (!(await safeIsVisible(exportItem))) {
+    exportItem = await findVisibleContextMenuRow(page, MENU_LABELS.export);
+  }
+
+  if (!exportItem || !(await safeIsVisible(exportItem))) {
     throw new Error('Could not find Export menu item.');
   }
 
-  await exportItem.hover().catch(() => {});
-  await exportItem.click({ timeout: TIMINGS.menuWaitMs }).catch(async () => {
-    await exportItem.hover({ timeout: TIMINGS.menuWaitMs });
-  });
-
+  await exportItem.hover({ timeout: TIMINGS.menuWaitMs });
   await page.waitForTimeout(TIMINGS.postClickPauseMs);
 
-  const htmlItem = await findMenuItem(page, MENU_LABELS.html);
-  if (!htmlItem) {
+  const ariaOwns = await exportItem.getAttribute('aria-owns').catch(() => null);
+  if (ariaOwns) {
+    await page.waitForSelector(`#${ariaOwns}`, {
+      state: 'visible',
+      timeout: TIMINGS.menuWaitMs
+    }).catch(() => {});
+  }
+
+  let htmlItem = page
+    .locator('.popover.spaceship-popover.visible .menu-row .parts-menu-label')
+    .filter({ hasText: /^HTML$/ })
+    .first();
+
+  if (!(await safeIsVisible(htmlItem))) {
+    const fallbackHtmlRow = await findVisibleContextMenuRow(page, MENU_LABELS.html);
+    if (fallbackHtmlRow) {
+      htmlItem = fallbackHtmlRow;
+    }
+  }
+
+  if (!(await safeIsVisible(htmlItem))) {
+    const genericHtml = await findMenuItem(page, MENU_LABELS.html);
+    if (genericHtml) {
+      htmlItem = genericHtml;
+    }
+  }
+
+  if (!(await safeIsVisible(htmlItem))) {
     throw new Error('Could not find HTML export menu item.');
   }
 
@@ -749,20 +1282,94 @@ async function triggerHtmlExport(page) {
   return downloadPromise;
 }
 
-async function downloadExport(page, doc) {
-  const normalizedUrl = normalizeDocUrl(doc.url);
-  await page.goto(normalizedUrl, {
-    waitUntil: 'domcontentloaded',
-    timeout: TIMINGS.navigationTimeoutMs
-  });
+async function downloadExportFromBrowsePage(page, doc) {
+  const normalizedUrl = String(doc.url || '').startsWith('quip-fallback://')
+    ? doc.url
+    : normalizeDocUrl(doc.url);
 
-  await page.waitForLoadState('domcontentloaded');
-  await page.waitForTimeout(TIMINGS.postClickPauseMs);
+  const targetInfo = await markDocumentTargetInBrowsePage(page, doc);
+  if (!targetInfo.found) {
+    await openBrowseFolder(page, BROWSE_URL);
+    await markBrowseContentRoot(page);
+    await expandAllFoldersInCurrentTree(page);
+  }
 
-  const resolvedTitle = await getDocumentTitle(page, doc.title, normalizedUrl);
-  log('INFO', `Opened document: ${resolvedTitle}`);
+  const refreshedTargetInfo = targetInfo.found
+    ? targetInfo
+    : await markDocumentTargetInBrowsePage(page, doc);
 
-  await openDocumentMenu(page);
+  if (!refreshedTargetInfo.found) {
+    throw new Error(`Could not locate file row in browse view for ${doc.title || normalizedUrl}`);
+  }
+
+  const target = page.locator('[data-quip-export-target="true"]').first();
+  if (!(await safeIsVisible(target))) {
+    throw new Error(`Located file row is not visible for ${doc.title || normalizedUrl}`);
+  }
+
+  await page.keyboard.press('Escape').catch(() => {});
+
+  if (!page.__quipBrowsePaneActivated) {
+    const activateBox = await target.boundingBox();
+    const activatePosition = activateBox
+      ? {
+          x: Math.max(12, Math.min(40, Math.round(activateBox.width * 0.08))),
+          y: Math.max(8, Math.round(activateBox.height / 2))
+        }
+      : undefined;
+
+    log('INFO', 'Activating browse pane before first right-click.');
+    await target.click({
+      timeout: TIMINGS.menuWaitMs,
+      position: activatePosition
+    });
+    await page.waitForTimeout(500);
+    page.__quipBrowsePaneActivated = true;
+  }
+
+  log('INFO', `Right-clicking file row using ${refreshedTargetInfo.strategy} match: ${doc.title || normalizedUrl}`);
+  const box = await target.boundingBox();
+  const clickPositions = box
+    ? [
+        {
+          x: Math.max(12, Math.min(40, Math.round(box.width * 0.08))),
+          y: Math.max(8, Math.round(box.height / 2))
+        },
+        {
+          x: Math.max(12, Math.min(28, Math.round(box.width * 0.05))),
+          y: Math.max(8, Math.round(box.height / 2))
+        }
+      ]
+    : [undefined];
+
+  let menuOpened = false;
+  let lastMenuError = null;
+
+  for (const position of clickPositions) {
+    try {
+      await target.click({
+        button: 'right',
+        timeout: TIMINGS.menuWaitMs,
+        position
+      });
+      await page.waitForTimeout(TIMINGS.postContextMenuPauseMs);
+      await waitForContextMenu(page);
+      menuOpened = true;
+      break;
+    } catch (error) {
+      lastMenuError = error;
+      await page.keyboard.press('Escape').catch(() => {});
+      await page.waitForTimeout(300);
+    }
+  }
+
+  if (!menuOpened) {
+    throw new Error(
+      `Right-click did not open the context menu for ${doc.title || normalizedUrl}: ${lastMenuError ? lastMenuError.message : 'unknown error'}`
+    );
+  }
+
+  const resolvedTitle = doc.title || extractDocId(normalizedUrl);
   const downloadPromise = await triggerHtmlExport(page);
   const download = await downloadPromise;
 
@@ -771,9 +1378,12 @@ async function downloadExport(page, doc) {
     throw new Error(`Download failed before save: ${failure}`);
   }
 
-  const suggestedName = await download
-    .suggestedFilename()
-    .catch(() => 'document.html');
+  let suggestedName = 'document.html';
+  try {
+    suggestedName = download.suggestedFilename() || 'document.html';
+  } catch {
+    suggestedName = 'document.html';
+  }
   const extension = path.extname(suggestedName) || '.html';
   const safeBase = sanitizeFilename(resolvedTitle, 'untitled');
   const relativeFolderPath = buildRelativeFolderPath(doc.folderPathParts || []);
@@ -811,12 +1421,13 @@ async function exportDocumentWithRetries(page, doc, state) {
         `Exporting (${attempt}/${MAX_RETRIES}): ${doc.title || normalizedUrl}`
       );
 
-      const result = await downloadExport(page, doc);
+      const result = await downloadExportFromBrowsePage(page, doc);
       state.exported[normalizedUrl] = {
         sourceUrl: normalizedUrl,
         title: result.title,
         relativePath: result.relativePath,
         folderPathParts: doc.folderPathParts || [],
+        folderUrl: doc.folderUrl || null,
         exportedAt: new Date().toISOString()
       };
       delete state.failures[normalizedUrl];
@@ -834,6 +1445,7 @@ async function exportDocumentWithRetries(page, doc, state) {
           sourceUrl: normalizedUrl,
           title: doc.title || normalizedUrl,
           folderPathParts: doc.folderPathParts || [],
+          folderUrl: doc.folderUrl || null,
           failedAt: new Date().toISOString(),
           error: error.message
         };
@@ -911,7 +1523,8 @@ async function main() {
       uniqueDocs.push({
         url: normalized,
         title: documentItem.title || extractDocId(normalized),
-        folderPathParts: documentItem.folderPathParts || []
+        folderPathParts: documentItem.folderPathParts || [],
+        folderUrl: documentItem.folderUrl || BROWSE_URL
       });
     }
 
