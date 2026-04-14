@@ -6,7 +6,7 @@
 
 This project uses Playwright and Node.js to export all Quip files to HTML (and, optionally, to Markdown).
 
-- ⚡ Export about 500 files in roughly 20 minutes
+- ⚡ Export 500 files in 20 minutes
 - 📁 Preserve the Quip folder hierarchy locally
 - 🖼️ Keep images, links, and tables intact in the exported HTML
 - 🔁 Resume safely and skip already-exported files on reruns
