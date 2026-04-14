@@ -58,16 +58,15 @@ The state file records successful exports so reruns skip files that were already
 
 ## Optional: Convert HTML Exports To Markdown
 
-If you have [Pandoc](https://pandoc.org/) installed, you can optionally convert the exported HTML files into a mirrored `exports_md/` directory. Pandoc is a separate tool and is not installed by `npm install`.
+If you have [Pandoc](https://pandoc.org/) installed, you can optionally convert the exported HTML files into a mirrored `exports_md/` directory and download Quip-hosted images into `exports_md_media/`. Pandoc is a separate tool and is not installed by `npm install`.
 
-Windows PowerShell:
-
-```powershell
-Get-ChildItem .\exports -Recurse -File -Filter *.html | ForEach-Object { $relative = $_.FullName.Substring((Resolve-Path .\exports).Path.Length + 1); $target = Join-Path .\exports_md ($relative -replace '\.html$', '.md'); New-Item -ItemType Directory -Force -Path (Split-Path $target) | Out-Null; pandoc $_.FullName -f html -t gfm -o $target }
-```
-
-Linux/macOS:
+Run:
 
 ```bash
-find ./exports -type f -name "*.html" | while read -r f; do rel="${f#./exports/}"; out="./exports_md/${rel%.html}.md"; mkdir -p "$(dirname "$out")"; pandoc "$f" -f html -t gfm -o "$out"; done
+npm run convert:md
 ```
+
+This optional script:
+- keeps the folder structure in `exports_md/`
+- downloads Quip image URLs into `exports_md_media/`
+- rewrites image references before running Pandoc

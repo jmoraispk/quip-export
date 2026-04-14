@@ -2,3 +2,4 @@ node_modules/
 .playwright-profile/
 exports/
 exports_md/
+exports_md_media/

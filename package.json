@@ -6,7 +6,8 @@
   "main": "export-quip-html.js",
   "scripts": {
     "start": "node export-quip-html.js",
-    "export": "node export-quip-html.js"
+    "export": "node export-quip-html.js",
+    "convert:md": "node convert-html-to-md.js"
   },
   "dependencies": {
     "playwright": "latest"
