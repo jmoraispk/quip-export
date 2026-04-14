@@ -183,6 +183,51 @@ function runPandoc(inputHtmlPath, outputMdPath) {
   });
 }
 
+function normalizeMarkdownOutput(markdown) {
+  let result = String(markdown || '');
+
+  function getAttr(attributes, name) {
+    const match = String(attributes || '').match(
+      new RegExp(`${name}="([^"]*)"`, 'i')
+    );
+    return match ? match[1] : '';
+  }
+
+  function imageMarkup(attributes) {
+    const src = getAttr(attributes, 'src');
+    const alt = getAttr(attributes, 'alt');
+    return src ? `![${alt || ''}](${src})` : '';
+  }
+
+  function embedMarkup(attributes) {
+    const src = getAttr(attributes, 'src');
+    return src ? `![](${src})` : '';
+  }
+
+  result = result.replace(
+    /<div\b[^>]*>\s*<img\b([\s\S]*?)\/>\s*<\/div>/gi,
+    (_match, attributes) => imageMarkup(attributes)
+  );
+
+  result = result.replace(
+    /<img\b([\s\S]*?)\/>/gi,
+    (_match, attributes) => imageMarkup(attributes)
+  );
+
+  result = result.replace(
+    /<div\b[^>]*>\s*<embed\b([\s\S]*?)\/>\s*<\/div>/gi,
+    (_match, attributes) => embedMarkup(attributes)
+  );
+
+  result = result.replace(
+    /<embed\b([\s\S]*?)\/>/gi,
+    (_match, attributes) => embedMarkup(attributes)
+  );
+
+  result = result.replace(/\n{3,}/g, '\n\n');
+  return result;
+}
+
 async function convertOneFile(htmlPath, index, total) {
   const htmlBaseRoot = fs.statSync(INPUT_PATH).isDirectory()
     ? INPUT_PATH
@@ -204,6 +249,8 @@ async function convertOneFile(htmlPath, index, total) {
   try {
     fs.writeFileSync(tempHtmlPath, localizedHtml, 'utf8');
     runPandoc(tempHtmlPath, mdPath);
+    const generatedMarkdown = fs.readFileSync(mdPath, 'utf8');
+    fs.writeFileSync(mdPath, normalizeMarkdownOutput(generatedMarkdown), 'utf8');
   } finally {
     try {
       fs.rmSync(tempDir, { recursive: true, force: true });
