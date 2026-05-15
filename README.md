@@ -27,9 +27,8 @@ npx playwright install chromium
 npm start
 ```
 
-4. On the very first run, log in to Quip in the Chromium window that Playwright opens.
-5. Once Quip is fully loaded, continue so the exporter can start running.
-6. After the export has started, you can leave the window open, move it to the background, or minimize it while the script continues.
+4. On the very first run, log in to Quip in the Chromium window that Playwright opens. The exporter polls every few seconds and starts automatically once login is detected.
+5. After the export has started, you can leave the window open, move it to the background, or minimize it while the script continues.
 
 ## Output
 

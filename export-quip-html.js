@@ -1,7 +1,5 @@
 const fs = require('fs');
 const path = require('path');
-const readline = require('readline/promises');
-const { stdin: input, stdout: output } = require('process');
 const { chromium } = require('playwright');
 
 const ROOT_DIR = __dirname;
@@ -129,7 +127,6 @@ const MENU_LABELS = {
 const TIMINGS = {
   defaultTimeoutMs: 15000,
   navigationTimeoutMs: 45000,
-  loginWaitMs: 10000,
   menuWaitMs: 8000,
   downloadTimeoutMs: 60000,
   postClickPauseMs: 700,
@@ -138,6 +135,9 @@ const TIMINGS = {
   postContextMenuPauseMs: 800,
   betweenRetriesMs: 2500,
   workspaceReadyPollMs: 1000,
+  loginPollMs: 5000,
+  loginReminderMs: 10000,
+  maxLoginWaitMs: 5 * 60 * 1000,
   maxWorkspaceWaitMs: 120000,
   crawlLoopLimit: 500
 };
@@ -311,15 +311,6 @@ function isExportedAndPresent(state, normalizedUrl) {
   return fs.existsSync(fullPath);
 }
 
-async function promptForEnter(message) {
-  const rl = readline.createInterface({ input, output });
-  try {
-    await rl.question(`${message}\n`);
-  } finally {
-    rl.close();
-  }
-}
-
 async function safeIsVisible(locator) {
   try {
     return await locator.isVisible();
@@ -382,20 +373,31 @@ async function ensureLoggedIn(page) {
     timeout: TIMINGS.navigationTimeoutMs
   });
 
-  await page.waitForTimeout(TIMINGS.loginWaitMs);
-
   if (await looksLoggedIn(page)) {
-    log('INFO', 'Quip appears to be logged in already.');
+    log('INFO', 'Quip login detected. Starting export.');
     return;
   }
 
-  log('INFO', 'Manual login may be required. Complete login in the browser window.');
-  await promptForEnter('After Quip is fully logged in and the workspace is visible, press Enter to continue.');
+  log('INFO', 'Log into Quip in the Chromium window. The exporter will start automatically once login is detected.');
 
-  const ready = await waitForWorkspaceReady(page);
-  if (!ready) {
-    throw new Error('Workspace did not become ready after manual login prompt.');
+  const deadline = Date.now() + TIMINGS.maxLoginWaitMs;
+  let lastReminderAt = Date.now();
+
+  while (Date.now() < deadline) {
+    await page.waitForTimeout(TIMINGS.loginPollMs);
+
+    if (await looksLoggedIn(page)) {
+      log('INFO', 'Quip login detected. Starting export.');
+      return;
+    }
+
+    if (Date.now() - lastReminderAt >= TIMINGS.loginReminderMs) {
+      log('INFO', 'Waiting for Quip login...');
+      lastReminderAt = Date.now();
+    }
   }
+
+  throw new Error('Timed out waiting for Quip login.');
 }
 
 function isLikelyDocumentUrl(rawUrl) {
