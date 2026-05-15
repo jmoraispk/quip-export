@@ -4,12 +4,14 @@
 [![Playwright](https://img.shields.io/badge/Playwright-Automation-2EAD33?logo=playwright&logoColor=white)](https://playwright.dev/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-202040)](#getting-started)
 
+<a href="https://youtu.be/LE-sSiiLw6I" target="_blank" rel="noopener"><img align="right" width="380" src="https://img.youtube.com/vi/LE-sSiiLw6I/hqdefault.jpg" alt="Watch the Quip HTML Exporter demo on YouTube"></a>
+
 This project uses Playwright and Node.js to export all Quip files to HTML (and, optionally, to Markdown).
 
 - ⚡ Export 500 files in 20 minutes
-- 📁 Preserve the Quip folder hierarchy locally
-- 🖼️ Keep images, links, and tables intact in the exported HTML
-- 🔁 Resume safely and skip already-exported files on reruns
+- 📁 Preserve Quip's folder hierarchy
+- 🖼️ Keep images, links, and tables intact
+- 🔁 Re-run and skip already-exported files
 
 ## Getting Started
 
