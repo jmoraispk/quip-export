@@ -750,12 +750,42 @@ async function openBrowseFolder(page, folderUrl) {
     timeout: TIMINGS.navigationTimeoutMs
   });
   await page.waitForLoadState('domcontentloaded');
+
+  try {
+    await page.waitForLoadState('networkidle', { timeout: TIMINGS.folderContentsLoadMs });
+  } catch {
+    // Quip keeps long-lived sockets open; networkidle may never fire. Fall back
+    // to the explicit workspace check below.
+  }
+
+  const ready = await waitForWorkspaceReady(page);
+  if (!ready) {
+    throw new Error(`Workspace did not finish loading at ${normalizedUrl}.`);
+  }
+
   await page.waitForTimeout(TIMINGS.postNavigationPauseMs);
-  await page.waitForTimeout(TIMINGS.folderContentsLoadMs);
+}
+
+async function evaluateWithRetry(page, pageFunction, arg) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await page.evaluate(pageFunction, arg);
+    } catch (error) {
+      lastError = error;
+      const message = String(error && error.message || '');
+      if (!/Execution context was destroyed|navigation|detached/i.test(message)) {
+        throw error;
+      }
+      await page.waitForLoadState('domcontentloaded').catch(() => {});
+      await page.waitForTimeout(TIMINGS.postNavigationPauseMs);
+    }
+  }
+  throw lastError;
 }
 
 async function markBrowseContentRoot(page) {
-  return page.evaluate(() => {
+  return evaluateWithRetry(page, () => {
     function isVisible(element) {
       if (!element) {
         return false;
