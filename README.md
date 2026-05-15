@@ -14,7 +14,7 @@ This project uses Playwright and Node.js to export all Quip files to HTML (and, 
 ## Getting Started
 
 1. Download or clone this repository.
-2. Install the required dependencies:
+2. Install [Node.js](https://nodejs.org/) and the required dependencies:
 
 ```bash
 npm install
