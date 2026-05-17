@@ -1,6 +1,6 @@
 {
   "name": "quip-html-exporter",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "Playwright automation to export accessible Quip documents as HTML.",
   "main": "export-quip-html.js",
